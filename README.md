@@ -17,15 +17,17 @@ v106/
 │   ├── qpsk_hw.py           硬件层：Overlay + xRFDC + NCO + AXI-DMA 单次突发收发
 │   ├── qpsk_dsp.py          DSP：RRC、ZC 前导、QPSK 映射/判决、帧同步、定时/频偏、EVM
 │   └── run_test.py          命令行版回归（多帧长 × 多图样出 BER 表）
-├── AM/ FM/ ASK/ PSK/ QAM/   五个调制案例，每个一套独立的四册
+├── AM/ FM/ ASK/ PSK/ QAM/ OFDM/   六个调制案例，每个一套独立的四册
 │   ├── 00_<案例>_init.ipynb   上电初始化（时钟/位流/RFDC/环回）+ 本案例基带自检
 │   ├── 01_<案例>_tx_rx.ipynb  生成基带 → DMA 发 → 立即收 → mod_01_<案例>.npz
 │   ├── 02_<案例>_demod.ipynb  读抓包解调 → mod_02_<案例>.npz（只存指标）
 │   └── 03_<案例>_verify.ipynb 真值 vs 解调 → PASS / FAIL 判定表
-├── modulation/              五个案例共用的库（notebook 通过 sys.path 引用）
+├── modulation/              全部案例共用的库（notebook 通过 sys.path 引用）
 │   ├── mod_dsp.py           DSP：Gray 星座、帧同步、判决反馈 PLL、AM/FM 波形与解调
 │   ├── mod_cases.py         案例表、基带生成、接收流水线、门限（LIM）、抓包存取
-│   └── run_mod_test.py      命令行版五案例回归
+│   ├── ofdm_dsp.py          OFDM：组帧、训练同步/CFO、LS 信道、导频 CPE、逐帧指标
+│   ├── ofdm_case.py         OFDM 案例包装：参数、收发流水线、抓包（含真值比特）、判定
+│   └── run_mod_test.py      命令行版五案例回归（不含 OFDM）
 └── tone/                    单音链路验证
     ├── 01_module_verify.ipynb
     └── 02_tx_tone_loopback.ipynb
@@ -41,18 +43,19 @@ sudo mkdir -p /home/xilinx/qpsk /home/xilinx/modulation
 sudo cp v106/qpsk/*.py      /home/xilinx/qpsk/
 sudo cp v106/qpsk/*.ipynb   /home/xilinx/jupyter_notebooks/qpsk/
 sudo cp v106/modulation/*.py  /home/xilinx/modulation/
-for c in AM FM ASK PSK QAM; do
+for c in AM FM ASK PSK QAM OFDM; do
   sudo mkdir -p /home/xilinx/jupyter_notebooks/modulation/$c
+  sudo chown xilinx:xilinx /home/xilinx/jupyter_notebooks/modulation/$c
   sudo cp v106/$c/*.ipynb /home/xilinx/jupyter_notebooks/modulation/$c/
 done
 sudo cp v106/soc.bit v106/soc.hwh /home/xilinx/jupyter_notebooks/v106/
 ```
 
-五个案例目录里**只放 `.ipynb`**；代码（`mod_dsp.py` / `mod_cases.py`）和所有 `.npz`
-都在库目录 `/home/xilinx/modulation/`，notebook 用 `sys.path.insert` 引用：
-自己的库目录 + `/home/xilinx/qpsk`（`qpsk_init` / `qpsk_dsp` / `qpsk_hw` / `run_test`）。
-案例之间互不依赖：AM 的 01/02/03 只读写 `mod_01_AM.npz` / `mod_02_AM.npz`，
-重抓 AM 不影响 FM。
+六个案例目录里**只放 `.ipynb`**；代码（`mod_dsp.py` / `mod_cases.py` / `ofdm_dsp.py` /
+`ofdm_case.py`）和所有 `.npz` 都在库目录 `/home/xilinx/modulation/`，notebook 用
+`sys.path.insert` 引用：自己的库目录 + `/home/xilinx/qpsk`（`qpsk_init` / `qpsk_dsp` /
+`qpsk_hw` / `run_test`）。案例之间互不依赖：AM 的 01/02/03 只读写 `mod_01_AM.npz` /
+`mod_02_AM.npz`，重抓 AM 不影响 FM。
 
 ## 运行顺序
 
@@ -62,12 +65,12 @@ sudo cp v106/soc.bit v106/soc.hwh /home/xilinx/jupyter_notebooks/v106/
 | 1 | `01_qpsk_tx_rx` | 环境已就绪；PL 里已是 v106 则复用不重下 |
 | 2 | `02_qpsk_demod` | `qpsk_03_capture.npz` |
 | 3 | `03_qpsk_verify` | 上面两个 npz |
-| 4 | `<案例>/00_<案例>_init` | 冷启动先跑；五个目录各一份，结构同构，只换第 6 节的案例自检 |
+| 4 | `<案例>/00_<案例>_init` | 冷启动先跑；六个目录各一份，结构同构，只换第 6 节的案例自检 |
 | 5 | `<案例>/01_<案例>_tx_rx` | 环境已就绪；LMK 未锁会自动 `ensure_clock()`，失败才回 00 |
 | 6 | `<案例>/02_<案例>_demod` | `mod_01_<案例>.npz` |
 | 7 | `<案例>/03_<案例>_verify` | `mod_01_<案例>.npz`，重新解调并判定 |
 
-`<案例>` ∈ `AM / FM / ASK / PSK / QAM`，每个目录的四册自成一条实验线。
+`<案例>` ∈ `AM / FM / ASK / PSK / QAM / OFDM`，每个目录的四册自成一条实验线。
 `02` / `03` 只读 `.npz`，不碰 PL / DMA / spidev，重启后可以直接跑。
 
 命令行等价物：
@@ -100,10 +103,11 @@ grep -o 'C_M_AXI_[MS]2MM_DATA_WIDTH" VALUE="[0-9]*"' /home/xilinx/jupyter_notebo
 
 notebook 里保留了这一次运行的输出，可直接查看。
 
-## 调制案例：AM / FM / ASK / PSK / QAM（各四册）
+## 调制案例：AM / FM / ASK / PSK / QAM / OFDM（各四册）
 
-五个案例走**同一条硬件路径**（v106 位流、1000 MHz NCO、DMA 单次突发环回），
-共用 `mod_dsp` 里的帧同步与锁相环，分叉只在映射/解调那一层。
+六个案例走**同一条硬件路径**（v106 位流、1000 MHz NCO、DMA 单次突发环回），
+单载波五案共用 `mod_dsp` 里的帧同步与锁相环，分叉只在映射/解调那一层；
+OFDM 用 `ofdm_dsp` / `ofdm_case`，把比特铺到时频网格上，同步改由训练符号完成。
 这样每个案例的指标差异只反映调制方式本身，而不是链路配置差异。
 
 每个案例目录内部编号固定为 `00_init → 01_tx_rx → 02_demod → 03_verify`，
@@ -119,11 +123,17 @@ notebook 里保留了这一次运行的输出，可直接查看。
 | 16QAM | 数字 | 16-QAM，I/Q 各 Gray | 4 bit | 9 帧 × (64+256+16) 符号，9216 bit / 25216 样点 |
 | AM | 模拟 | DSB-LC，μ=0.8 | — | 单音消息 0.5 MHz，2.048 ms 消息 + 前后 4096 样点 |
 | FM | 模拟 | 调频，Δf=2 MHz（β=4） | — | 单音消息 0.5 MHz，2.048 ms 消息 + 前后 4096 样点 |
+| OFDM | 数字（多载波） | QPSK 数据子载波 + BPSK 导频 | 2 bit/子载波 | 9 帧 × 9728 点，9216 bit / 90112 样点 |
 
 - 数字帧结构沿用 QPSK：`[64 符号 ZC 前导 root=25][载荷][16 符号零保护]`，
   RRC 成型 SPS=8、α=0.35，9 帧拼一个突发，峰值 0.4（−12 dBFS）。
 - 模拟案例的载波在基带 8 MHz（相对 1000 MHz NCO），消息是**已知**单音：
   接收端按已知消息做相关对齐后量测，验证的是链路保真度，不是盲解调。
+- OFDM：N=1024、CP=128（子载波间隔 250 kHz），占用 |k| ∈ [8, 60]（±15 MHz）；
+  导频 14 个（|k|%8==0，BPSK）+ 数据 92 个（QPSK）。每帧
+  `[训练 ×2][数据 ×6][512 点零保护]`，两段相同训练符号同时给出定时、CFO 与逐子载波
+  LS 信道；导频再逐符号纠公共相位。峰值 0.4（PAPR 约 19.5 dB），
+  01 抓包时把 9×1024 真值比特一并写进 `.npz`，02/03 不依赖随机数重放。
 - 门限集中定义在 `mod_cases.LIM`，06/07/08 与命令行回归共用同一份：
   `evm_max=8%`、`margin_min=0.85`、`corr_min=0.98`、`rmse_max=10%`、
   `ratio_tol=0.10`、`ripple_max=10%`。
@@ -137,8 +147,9 @@ notebook 里保留了这一次运行的输出，可直接查看。
 | 16QAM | BER 0/9216，EVM 2.40%，余量 0.860 | PASS |
 | AM | corr +0.9995，rmse 3.8%，μ 比值 1.012 | PASS |
 | FM | corr +1.0000，rmse 2.2%，Δf 比值 0.976，纹波 3.3% | PASS |
+| OFDM | BER 0/9216，EVM 1.55%，余量 0.959，CFO −10 Hz | PASS |
 
-五个案例全 PASS，数字部分零误码。门限相对实测留了 2~3 倍余量：
+六个案例全 PASS，数字部分零误码。门限相对实测留了 2~3 倍余量：
 板上比离线仿真多了 DAC/ADC 量化、环回损耗和时钟抖动，指标会变差，
 但不应跨一个量级——跨了就是链路问题，不是调制方式问题。
 
