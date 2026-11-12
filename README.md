@@ -17,11 +17,13 @@ v106/
 │   ├── qpsk_hw.py           硬件层：Overlay + xRFDC + NCO + AXI-DMA 单次突发收发
 │   ├── qpsk_dsp.py          DSP：RRC、ZC 前导、QPSK 映射/判决、帧同步、定时/频偏、EVM
 │   └── run_test.py          命令行版回归（多帧长 × 多图样出 BER 表）
-├── modulation/              五个调制案例（ASK / 8PSK / 16QAM / AM / FM）
-│   ├── 06_mod_tx_rx.ipynb   参数表 → 星座/波形/频谱 → 逐案例 DMA 发 + 抓回 → mod_06_*.npz
-│   ├── 07_mod_demod.ipynb   读 npz 解调：星座、包络、鉴频、EVM → mod_07_demod.npz
-│   ├── 08_mod_verify.ipynb  实测指标对照门限，逐案例 PASS / FAIL + 2×2 指标图
-│   ├── mod_dsp.py           共用 DSP：Gray 星座、帧同步、判决反馈 PLL、AM/FM 波形与解调
+├── AM/ FM/ ASK/ PSK/ QAM/   五个调制案例，每个一套独立的四册
+│   ├── 00_<案例>_init.ipynb   上电初始化（时钟/位流/RFDC/环回）+ 本案例基带自检
+│   ├── 01_<案例>_tx_rx.ipynb  生成基带 → DMA 发 → 立即收 → mod_01_<案例>.npz
+│   ├── 02_<案例>_demod.ipynb  读抓包解调 → mod_02_<案例>.npz（只存指标）
+│   └── 03_<案例>_verify.ipynb 真值 vs 解调 → PASS / FAIL 判定表
+├── modulation/              五个案例共用的库（notebook 通过 sys.path 引用）
+│   ├── mod_dsp.py           DSP：Gray 星座、帧同步、判决反馈 PLL、AM/FM 波形与解调
 │   ├── mod_cases.py         案例表、基带生成、接收流水线、门限（LIM）、抓包存取
 │   └── run_mod_test.py      命令行版五案例回归
 └── tone/                    单音链路验证
@@ -39,13 +41,18 @@ sudo mkdir -p /home/xilinx/qpsk /home/xilinx/modulation
 sudo cp v106/qpsk/*.py      /home/xilinx/qpsk/
 sudo cp v106/qpsk/*.ipynb   /home/xilinx/jupyter_notebooks/qpsk/
 sudo cp v106/modulation/*.py  /home/xilinx/modulation/
-sudo cp v106/modulation/*.ipynb /home/xilinx/jupyter_notebooks/modulation/
+for c in AM FM ASK PSK QAM; do
+  sudo mkdir -p /home/xilinx/jupyter_notebooks/modulation/$c
+  sudo cp v106/$c/*.ipynb /home/xilinx/jupyter_notebooks/modulation/$c/
+done
 sudo cp v106/soc.bit v106/soc.hwh /home/xilinx/jupyter_notebooks/v106/
 ```
 
-`modulation/` 的 notebook 会 `sys.path.insert` 三个目录：自己的 `/home/xilinx/modulation`、
-`/home/xilinx/qpsk`（复用 `qpsk_dsp` / `qpsk_hw` / `qpsk_init` / `run_test`）。
-只跑 07/08 不用放 `qpsk/` 的 .py 也行，但 06 和命令行回归需要。
+五个案例目录里**只放 `.ipynb`**；代码（`mod_dsp.py` / `mod_cases.py`）和所有 `.npz`
+都在库目录 `/home/xilinx/modulation/`，notebook 用 `sys.path.insert` 引用：
+自己的库目录 + `/home/xilinx/qpsk`（`qpsk_init` / `qpsk_dsp` / `qpsk_hw` / `run_test`）。
+案例之间互不依赖：AM 的 01/02/03 只读写 `mod_01_AM.npz` / `mod_02_AM.npz`，
+重抓 AM 不影响 FM。
 
 ## 运行顺序
 
@@ -55,11 +62,13 @@ sudo cp v106/soc.bit v106/soc.hwh /home/xilinx/jupyter_notebooks/v106/
 | 1 | `01_qpsk_tx_rx` | 环境已就绪；PL 里已是 v106 则复用不重下 |
 | 2 | `02_qpsk_demod` | `qpsk_03_capture.npz` |
 | 3 | `03_qpsk_verify` | 上面两个 npz |
-| 4 | `06_mod_tx_rx` | 环境已就绪；LMK 未锁会自动 `ensure_clock()`，失败才回 00 |
-| 5 | `07_mod_demod` | `mod_06_*.npz`（5 个） |
-| 6 | `08_mod_verify` | `mod_06_*.npz`；会和 07 各解调一遍，互不依赖 |
+| 4 | `<案例>/00_<案例>_init` | 冷启动先跑；五个目录各一份，结构同构，只换第 6 节的案例自检 |
+| 5 | `<案例>/01_<案例>_tx_rx` | 环境已就绪；LMK 未锁会自动 `ensure_clock()`，失败才回 00 |
+| 6 | `<案例>/02_<案例>_demod` | `mod_01_<案例>.npz` |
+| 7 | `<案例>/03_<案例>_verify` | `mod_01_<案例>.npz`，重新解调并判定 |
 
-`02` / `03` / `07` / `08` 只读 `.npz`，不碰 PL / DMA / spidev，重启后可以直接跑。
+`<案例>` ∈ `AM / FM / ASK / PSK / QAM`，每个目录的四册自成一条实验线。
+`02` / `03` 只读 `.npz`，不碰 PL / DMA / spidev，重启后可以直接跑。
 
 命令行等价物：
 
@@ -91,11 +100,15 @@ grep -o 'C_M_AXI_[MS]2MM_DATA_WIDTH" VALUE="[0-9]*"' /home/xilinx/jupyter_notebo
 
 notebook 里保留了这一次运行的输出，可直接查看。
 
-## 调制案例（06–08）：ASK / 8PSK / 16QAM / AM / FM
+## 调制案例：AM / FM / ASK / PSK / QAM（各四册）
 
 五个案例走**同一条硬件路径**（v106 位流、1000 MHz NCO、DMA 单次突发环回），
 共用 `mod_dsp` 里的帧同步与锁相环，分叉只在映射/解调那一层。
 这样每个案例的指标差异只反映调制方式本身，而不是链路配置差异。
+
+每个案例目录内部编号固定为 `00_init → 01_tx_rx → 02_demod → 03_verify`，
+四册只靠 `.npz` 传递（`mod_01_<案例>.npz` 抓包、`mod_02_<案例>.npz` 指标），
+案例之间没有共享状态：重跑 AM 不会影响 FM / PSK / QAM。
 
 ### 案例参数
 
@@ -115,29 +128,28 @@ notebook 里保留了这一次运行的输出，可直接查看。
   `evm_max=8%`、`margin_min=0.85`、`corr_min=0.98`、`rmse_max=10%`、
   `ratio_tol=0.10`、`ripple_max=10%`。
 
-### 板上实测（2026-11-11）
+### 板上实测（2026-11-12，重组后重跑）
 
 | 案例 | 关键指标 | 结论 |
 |---|---|---|
-| ASK4 | BER 0/9216，EVM 2.35%，余量 0.940 | PASS |
-| 8PSK | BER 0/13824，EVM 2.24%，余量 0.903 | PASS |
-| 16QAM | BER 0/9216，EVM 2.19%，余量 0.863 | PASS |
-| AM | corr +0.9996，rmse 3.2%，μ 比值 1.010 | PASS |
-| FM | corr +1.0000，rmse 2.2%，Δf 比值 0.977，纹波 2.5% | PASS |
+| ASK4 | BER 0/9216，EVM 2.68%，余量 0.925 | PASS |
+| 8PSK | BER 0/13824，EVM 2.56%，余量 0.900 | PASS |
+| 16QAM | BER 0/9216，EVM 2.40%，余量 0.860 | PASS |
+| AM | corr +0.9995，rmse 3.8%，μ 比值 1.012 | PASS |
+| FM | corr +1.0000，rmse 2.2%，Δf 比值 0.976，纹波 3.3% | PASS |
 
 五个案例全 PASS，数字部分零误码。门限相对实测留了 2~3 倍余量：
 板上比离线仿真多了 DAC/ADC 量化、环回损耗和时钟抖动，指标会变差，
 但不应跨一个量级——跨了就是链路问题，不是调制方式问题。
 
-抓包与离线复算：
+抓包由各案例的 `01_<案例>_tx_rx` 生成（`/home/xilinx/modulation/mod_01_<案例>.npz`），
+`02` / `03` 只读它，不碰 PL / DMA，断电重启后也能跑。`.npz` 共约 5 MB，仓库里不提交。
+
+命令行一次跑完五个案例（只打表，不落盘、不参与 02/03）：
 
 ```bash
-# 板上跑一次并落盘（不落盘就只打表）
-sudo bash -c '. /etc/profile.d/pynq_venv.sh; python3 /home/xilinx/modulation/run_mod_test.py --save /tmp/mod_npz'
+sudo bash -c '. /etc/profile.d/pynq_venv.sh; python3 /home/xilinx/modulation/run_mod_test.py'
 ```
-
-`--save` 存下的 `mod_06_*.npz` 可直接给 07/08 用（5 个文件共约 5 MB，仓库里不提交）；
-07/08 只读 npz，不碰 PL / DMA，断电重启后也能跑。
 
 ## 已知注意事项
 
